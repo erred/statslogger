@@ -86,7 +86,7 @@ type Server struct {
 }
 
 func NewServer(args []string) *Server {
-	loggerp, err := zap.NewProduction()
+	loggerp, err := zap.NewDevelopment()
 	if err != nil {
 		log.Fatal(err)
 	}
