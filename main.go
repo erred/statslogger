@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"log"
+	stdlog "log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,8 +14,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -31,7 +31,10 @@ type event struct {
 }
 
 func main() {
-	s := NewServer(os.Args[1:])
+	log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, NoColor: true})
+	slg := stdlog.New(log.Logger, "", 0)
+
+	s := NewServer(os.Args)
 	go s.saver()
 
 	// prometheus
@@ -39,7 +42,7 @@ func main() {
 		prometheus.DefaultRegisterer,
 		promhttp.HandlerFor(
 			prometheus.DefaultGatherer,
-			promhttp.HandlerOpts{ErrorLog: s.stdlog},
+			promhttp.HandlerOpts{ErrorLog: slg},
 		),
 	)
 
@@ -57,25 +60,25 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      5 * time.Second,
 		IdleTimeout:       60 * time.Second,
-		ErrorLog:          s.stdlog,
+		ErrorLog:          slg,
 	}
 	go func() {
-		s.log.Errorw("serve exit", "err", srv.ListenAndServe())
+		err := srv.ListenAndServe()
+		log.Info().Err(err).Msg("serve exit")
 	}()
 
 	// shutdown
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT)
-	s.log.Errorw("caught", "signal", <-sigs)
+	sig := <-sigs
+	log.Info().Str("signal", sig.String()).Msg("shutting down")
 	srv.Shutdown(context.Background())
 	s.shutdown()
 }
 
 type Server struct {
-	log    *zap.SugaredLogger
-	stdlog *log.Logger
-	save   chan event
-	done   chan struct{}
+	save chan event
+	done chan struct{}
 
 	// config
 	addr string
@@ -86,20 +89,9 @@ type Server struct {
 }
 
 func NewServer(args []string) *Server {
-	loggerp, err := zap.NewDevelopment()
-	if err != nil {
-		log.Fatal(err)
-	}
-	loggers, err := zap.NewStdLogAt(loggerp, zapcore.ErrorLevel)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	s := &Server{
-		log:    loggerp.Sugar(),
-		stdlog: loggers,
-		save:   make(chan event),
-		done:   make(chan struct{}),
+		save: make(chan event),
+		done: make(chan struct{}),
 		trigger: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "com_seabkhliao_log_trigger",
 			Help: "trigger of a event record",
@@ -108,15 +100,15 @@ func NewServer(args []string) *Server {
 		),
 	}
 
-	fs := flag.NewFlagSet("com-seankhliao-log", flag.ExitOnError)
+	fs := flag.NewFlagSet(args[0], flag.ExitOnError)
 	fs.StringVar(&s.addr, "addr", ":80", "host:port to serve on")
 	fs.StringVar(&s.data, "data", "/data/log.json", "path to save file")
-	err = fs.Parse(args)
+	err := fs.Parse(args[1:])
 	if err != nil {
-		s.log.Fatalw("parse args", "err", err)
+		log.Fatal().Err(err).Msg("parse flags")
 	}
 
-	s.log.Infow("args", "addr", s.addr, "data", s.data)
+	log.Info().Str("addr", s.addr).Str("data", s.data).Msg("configured")
 	return s
 }
 
@@ -151,8 +143,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Dst:     r.Form.Get("dst"),
 		Dur:     r.Form.Get("dur"),
 	}
-	s.log.Infow("record", "trigger", e.Trigger, "src", e.Src, "dst", e.Dst, "remote", e.Remote, "dur", e.Dur)
 	s.save <- e
+	log.Debug().Str("trigger", e.Trigger).Str("src", e.Src).Str("dst", e.Dst).Str("remote", e.Remote).Str("dur", e.Dur).Msg("recorded")
 	s.trigger.WithLabelValues(e.Trigger).Inc()
 }
 
@@ -168,14 +160,14 @@ func (s *Server) saver() {
 	defer close(s.done)
 	f, err := os.OpenFile(s.data, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		s.log.Fatalw("open save file", "data", s.data, "err", err)
+		log.Fatal().Str("data", s.data).Err(err).Msg("open save file")
 	}
 	j := json.NewEncoder(f)
 	defer f.Close()
 	for e := range s.save {
 		err = j.Encode(e)
 		if err != nil {
-			s.log.Fatalw("encode", "event", e, "err", err)
+			log.Fatal().Interface("event", e).Err(err).Msg("encode")
 		}
 	}
 }
