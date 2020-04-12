@@ -109,12 +109,14 @@ func NewServer(args []string) *Server {
 	}
 
 	fs := flag.NewFlagSet("com-seankhliao-log", flag.ExitOnError)
-	fs.StringVar(&s.addr, "addr", ":8080", "host:port to serve on")
+	fs.StringVar(&s.addr, "addr", ":80", "host:port to serve on")
 	fs.StringVar(&s.data, "data", "/data/log.json", "path to save file")
 	err = fs.Parse(args)
 	if err != nil {
 		s.log.Fatalw("parse args", "err", err)
 	}
+
+	s.log.Infow("args", "addr", s.addr, "data", s.data)
 	return s
 }
 

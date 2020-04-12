@@ -1,4 +1,4 @@
-module go.seankhliao.com/com-seankhliao-log
+module go.seankhliao.com/statslogger
 
 go 1.14
 
