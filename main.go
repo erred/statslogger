@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	stdlog "log"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,7 +15,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -31,49 +30,19 @@ type event struct {
 }
 
 func main() {
-	log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, NoColor: true})
-	slg := stdlog.New(log.Logger, "", 0)
-
-	s := NewServer(os.Args)
-	go s.saver()
-
-	// prometheus
-	promhandler := promhttp.InstrumentMetricHandler(
-		prometheus.DefaultRegisterer,
-		promhttp.HandlerFor(
-			prometheus.DefaultGatherer,
-			promhttp.HandlerOpts{ErrorLog: slg},
-		),
-	)
-
-	// routes
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.index)
-	mux.HandleFunc("/health", s.healthcheck)
-	mux.Handle("/metrics", promhandler)
-	mux.Handle("/api", s)
-
-	// server
-	srv := &http.Server{
-		Addr:              s.addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      5 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		ErrorLog:          slg,
-	}
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		err := srv.ListenAndServe()
-		log.Info().Err(err).Msg("serve exit")
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, syscall.SIGINT)
+		<-sigs
+		cancel()
 	}()
 
-	// shutdown
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT)
-	sig := <-sigs
-	log.Info().Str("signal", sig.String()).Msg("shutting down")
-	srv.Shutdown(context.Background())
-	s.shutdown()
+	// server
+	s := NewServer(os.Args)
+	go s.saver()
+	s.Run(ctx)
+
 }
 
 type Server struct {
@@ -81,11 +50,15 @@ type Server struct {
 	done chan struct{}
 
 	// config
-	addr string
 	data string
 
 	// metrics
 	trigger *prometheus.CounterVec
+
+	// server
+	log zerolog.Logger
+	mux *http.ServeMux
+	srv *http.Server
 }
 
 func NewServer(args []string) *Server {
@@ -98,17 +71,29 @@ func NewServer(args []string) *Server {
 		},
 			[]string{"trigger"},
 		),
+		log: zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, NoColor: true, TimeFormat: time.RFC3339}).With().Timestamp().Logger(),
+		mux: http.NewServeMux(),
+		srv: &http.Server{
+			ReadHeaderTimeout: 5 * time.Second,
+			WriteTimeout:      5 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		},
 	}
+
+	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	s.mux.Handle("/metrics", promhttp.Handler())
+	s.mux.Handle("/api", s)
+	s.mux.Handle("/", http.RedirectHandler(redirectURL, http.StatusFound))
+
+	s.srv.Handler = s.mux
+	s.srv.ErrorLog = log.New(s.log, "", 0)
 
 	fs := flag.NewFlagSet(args[0], flag.ExitOnError)
-	fs.StringVar(&s.addr, "addr", ":80", "host:port to serve on")
+	fs.StringVar(&s.srv.Addr, "addr", ":80", "host:port to serve on")
 	fs.StringVar(&s.data, "data", "/data/log.json", "path to save file")
-	err := fs.Parse(args[1:])
-	if err != nil {
-		log.Fatal().Err(err).Msg("parse flags")
-	}
+	fs.Parse(args[1:])
 
-	log.Info().Str("addr", s.addr).Str("data", s.data).Msg("configured")
+	s.log.Info().Str("addr", s.srv.Addr).Str("data", s.data).Msg("configured")
 	return s
 }
 
@@ -116,16 +101,18 @@ func NewServer(args []string) *Server {
 // /record?trigger=ping&src=...&dst=...
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// filter methods
-	if r.Method == http.MethodOptions {
+	switch r.Method {
+	case http.MethodOptions:
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 		w.WriteHeader(http.StatusNoContent)
 		return
-	} else if r.Method != http.MethodPost {
+	case http.MethodGet, http.MethodPost:
+		w.WriteHeader(http.StatusNoContent)
+	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
 
 	// get data
 	r.ParseForm()
@@ -144,35 +131,39 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Dur:     r.Form.Get("dur"),
 	}
 	s.save <- e
-	log.Debug().Str("trigger", e.Trigger).Str("src", e.Src).Str("dst", e.Dst).Str("remote", e.Remote).Str("dur", e.Dur).Msg("recorded")
+	s.log.Debug().Str("trigger", e.Trigger).Str("src", e.Src).Str("dst", e.Dst).Str("remote", e.Remote).Str("dur", e.Dur).Msg("recorded")
 	s.trigger.WithLabelValues(e.Trigger).Inc()
 }
 
-func (s *Server) index(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, redirectURL, http.StatusFound)
-}
+func (s *Server) Run(ctx context.Context) {
+	errc := make(chan error)
+	go func() {
+		errc <- s.srv.ListenAndServe()
+	}()
 
-func (s *Server) healthcheck(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
+	var err error
+	select {
+	case err = <-errc:
+	case <-ctx.Done():
+		err = s.srv.Shutdown(ctx)
+		close(s.save)
+		<-s.done
+	}
+	s.log.Error().Err(err).Msg("server exit")
 }
 
 func (s *Server) saver() {
 	defer close(s.done)
 	f, err := os.OpenFile(s.data, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Fatal().Str("data", s.data).Err(err).Msg("open save file")
+		s.log.Fatal().Str("data", s.data).Err(err).Msg("open save file")
 	}
 	j := json.NewEncoder(f)
 	defer f.Close()
 	for e := range s.save {
 		err = j.Encode(e)
 		if err != nil {
-			log.Fatal().Interface("event", e).Err(err).Msg("encode")
+			s.log.Fatal().Interface("event", e).Err(err).Msg("encode")
 		}
 	}
-}
-
-func (s *Server) shutdown() {
-	close(s.save)
-	<-s.done
 }
