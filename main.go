@@ -66,7 +66,7 @@ func NewServer(args []string) *Server {
 		save: make(chan event),
 		done: make(chan struct{}),
 		trigger: promauto.NewCounterVec(prometheus.CounterOpts{
-			Name: "com_seabkhliao_log_trigger",
+			Name: "statslogger_trigger_count",
 			Help: "trigger of a event record",
 		},
 			[]string{"trigger"},
