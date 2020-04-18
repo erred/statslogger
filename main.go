@@ -21,6 +21,18 @@ const (
 	redirectURL = "https://seankhliao.com/"
 )
 
+var (
+	port = func() string {
+		port := os.Getenv("PORT")
+		if port == "" {
+			port = ":8080"
+		} else if port[0] != ':' {
+			port = ":" + port
+		}
+		return port
+	}()
+)
+
 type event struct {
 	Time     time.Time
 	Remote   string
@@ -89,7 +101,7 @@ func NewServer(args []string) *Server {
 	s.srv.ErrorLog = log.New(s.log, "", 0)
 
 	fs := flag.NewFlagSet(args[0], flag.ExitOnError)
-	fs.StringVar(&s.srv.Addr, "addr", ":80", "host:port to serve on")
+	fs.StringVar(&s.srv.Addr, "addr", port, "host:port to serve on")
 	fs.StringVar(&s.data, "data", "/data/log.json", "path to save file")
 	fs.Parse(args[1:])
 
