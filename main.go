@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -95,6 +96,7 @@ func NewServer(args []string) *Server {
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	s.mux.Handle("/metrics", promhttp.Handler())
 	s.mux.Handle("/api", s)
+	s.mux.HandleFunc("/json", s.json)
 	s.mux.Handle("/", http.RedirectHandler(redirectURL, http.StatusFound))
 
 	s.srv.Handler = s.mux
@@ -107,6 +109,36 @@ func NewServer(args []string) *Server {
 
 	s.log.Info().Str("addr", s.srv.Addr).Str("data", s.data).Msg("configured")
 	return s
+}
+
+func (s *Server) json(w http.ResponseWriter, r *http.Request) {
+	// filter methods
+	switch r.Method {
+	case http.MethodOptions:
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case http.MethodPost:
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	defer r.Body.Close()
+	b, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		s.log.Error().Err(err).Str("handler", "json").Msg("read body")
+		return
+	}
+	if !json.Valid(b) {
+		s.log.Error().Str("handler", "json").Msg("invalid json")
+		return
+	}
+	s.log.Debug().RawJSON("data", b).Msg("got")
+
+	s.trigger.WithLabelValues("json").Inc()
 }
 
 // ServeHTTP handles recording of events
