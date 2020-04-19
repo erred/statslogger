@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -12,10 +14,12 @@ import (
 	"syscall"
 	"time"
 
+	"cloud.google.com/go/storage"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
+	"google.golang.org/api/option"
 )
 
 const (
@@ -52,39 +56,36 @@ func main() {
 	}()
 
 	// server
-	s := NewServer(os.Args)
-	go s.saver()
-	s.Run(ctx)
-
+	NewServer(ctx, os.Args).Run()
 }
 
 type Server struct {
-	save chan event
-	done chan struct{}
-
-	// config
-	data string
-
 	// metrics
 	trigger *prometheus.CounterVec
 
 	// server
+	ctx context.Context
+
+	w    *storage.Writer
+	data zerolog.Logger
+
 	log zerolog.Logger
+
 	mux *http.ServeMux
 	srv *http.Server
 }
 
-func NewServer(args []string) *Server {
+func NewServer(ctx context.Context, args []string) *Server {
 	s := &Server{
-		save: make(chan event),
-		done: make(chan struct{}),
 		trigger: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "statslogger_trigger_count",
 			Help: "trigger of a event record",
 		},
 			[]string{"trigger"},
 		),
-		log: zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, NoColor: true, TimeFormat: time.RFC3339}).With().Timestamp().Logger(),
+		log: zerolog.New(zerolog.ConsoleWriter{
+			Out: os.Stdout, NoColor: true, TimeFormat: time.RFC3339,
+		}).With().Timestamp().Logger(),
 		mux: http.NewServeMux(),
 		srv: &http.Server{
 			ReadHeaderTimeout: 5 * time.Second,
@@ -94,20 +95,30 @@ func NewServer(args []string) *Server {
 	}
 
 	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-	s.mux.Handle("/metrics", promhttp.Handler())
-	s.mux.Handle("/api", s)
+	s.mux.HandleFunc("/form", s.form)
 	s.mux.HandleFunc("/json", s.json)
+	s.mux.Handle("/metrics", promhttp.Handler())
 	s.mux.Handle("/", http.RedirectHandler(redirectURL, http.StatusFound))
 
 	s.srv.Handler = s.mux
 	s.srv.ErrorLog = log.New(s.log, "", 0)
 
+	var bucket, cred string
 	fs := flag.NewFlagSet(args[0], flag.ExitOnError)
 	fs.StringVar(&s.srv.Addr, "addr", port, "host:port to serve on")
-	fs.StringVar(&s.data, "data", "/data/log.json", "path to save file")
+	fs.StringVar(&bucket, "bucket", "gs://statslogger-seankhliao-com", "gcs bucket")
+	fs.StringVar(&cred, "cred", "/var/secrets/google/sa.json", "service account json file path")
 	fs.Parse(args[1:])
 
-	s.log.Info().Str("addr", s.srv.Addr).Str("data", s.data).Msg("configured")
+	client, err := storage.NewClient(ctx, option.WithCredentialsFile(cred))
+	if err != nil {
+		s.log.Fatal().Err(err).Str("cred", cred).Msg("configure storage client")
+	}
+	o := client.Bucket(bucket).Object(fmt.Sprintf("statslogger.%v.json", time.Now()))
+	s.w = o.NewWriter(ctx)
+	s.data = zerolog.New(s.w).With().Timestamp().Logger()
+
+	s.log.Info().Str("addr", s.srv.Addr).Str("obj", o.ObjectName()).Msg("configured")
 	return s
 }
 
@@ -127,23 +138,28 @@ func (s *Server) json(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer r.Body.Close()
+	h := r.URL.Path
 	b, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		s.log.Error().Err(err).Str("handler", "json").Msg("read body")
+		s.log.Error().Err(err).Str("handler", h).Msg("read body")
 		return
 	}
 	if !json.Valid(b) {
-		s.log.Error().Str("handler", "json").Msg("invalid json")
+		s.log.Error().Str("handler", h).Err(errors.New("invalid json")).Msg("validate body")
 		return
 	}
-	s.log.Debug().RawJSON("data", b).Msg("got")
+	remote := r.Header.Get("x-forwarded-for")
+	if remote == "" {
+		remote = r.RemoteAddr
+	}
 
-	s.trigger.WithLabelValues("json").Inc()
+	s.data.Log().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
+	s.trigger.WithLabelValues(h).Inc()
 }
 
 // ServeHTTP handles recording of events
 // /record?trigger=ping&src=...&dst=...
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (s *Server) form(w http.ResponseWriter, r *http.Request) {
 	// filter methods
 	switch r.Method {
 	case http.MethodOptions:
@@ -159,27 +175,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// get data
+	h := r.URL.Path
 	r.ParseForm()
+	b, err := json.Marshal(r.Form)
+	if err != nil {
+		s.log.Error().Str("handler", h).Err(err).Msg("marshal to json")
+	}
+
 	remote := r.Header.Get("x-forwarded-for")
 	if remote == "" {
 		remote = r.RemoteAddr
 	}
 
-	// record
-	e := event{
-		Time:    time.Now(),
-		Remote:  remote,
-		Trigger: r.Form.Get("trigger"),
-		Src:     r.Form.Get("src"),
-		Dst:     r.Form.Get("dst"),
-		Dur:     r.Form.Get("dur"),
-	}
-	s.save <- e
-	s.log.Debug().Str("trigger", e.Trigger).Str("src", e.Src).Str("dst", e.Dst).Str("remote", e.Remote).Str("dur", e.Dur).Msg("recorded")
-	s.trigger.WithLabelValues(e.Trigger).Inc()
+	s.data.Log().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
+	s.trigger.WithLabelValues(h).Inc()
 }
 
-func (s *Server) Run(ctx context.Context) {
+func (s *Server) Run() {
 	errc := make(chan error)
 	go func() {
 		errc <- s.srv.ListenAndServe()
@@ -188,26 +200,11 @@ func (s *Server) Run(ctx context.Context) {
 	var err error
 	select {
 	case err = <-errc:
-	case <-ctx.Done():
+	case <-s.ctx.Done():
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 		err = s.srv.Shutdown(ctx)
-		close(s.save)
-		<-s.done
 	}
-	s.log.Error().Err(err).Msg("server exit")
-}
-
-func (s *Server) saver() {
-	defer close(s.done)
-	f, err := os.OpenFile(s.data, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		s.log.Fatal().Str("data", s.data).Err(err).Msg("open save file")
-	}
-	j := json.NewEncoder(f)
-	defer f.Close()
-	for e := range s.save {
-		err = j.Encode(e)
-		if err != nil {
-			s.log.Fatal().Interface("event", e).Err(err).Msg("encode")
-		}
-	}
+	s.log.Error().Err(err).Msg("exit")
+	s.w.Close()
 }
