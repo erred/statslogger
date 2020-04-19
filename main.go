@@ -83,6 +83,9 @@ func NewServer(ctx context.Context, args []string) *Server {
 		},
 			[]string{"trigger"},
 		),
+		ctx: ctx,
+		// w set below
+		// data set below
 		log: zerolog.New(zerolog.ConsoleWriter{
 			Out: os.Stdout, NoColor: true, TimeFormat: time.RFC3339,
 		}).With().Timestamp().Logger(),
