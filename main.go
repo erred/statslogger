@@ -117,7 +117,8 @@ func NewServer(ctx context.Context, args []string) *Server {
 	if err != nil {
 		s.log.Fatal().Err(err).Str("cred", cred).Msg("configure storage client")
 	}
-	o := client.Bucket(bucket).Object(fmt.Sprintf("statslogger.%v.json", time.Now()))
+	bkt := client.Bucket(bucket)
+	o := bkt.Object(fmt.Sprintf("log.%v.json", time.Now().Format(time.RFC3339)))
 	s.w = o.NewWriter(ctx)
 	s.data = zerolog.New(s.w).With().Timestamp().Logger()
 
