@@ -109,7 +109,7 @@ func NewServer(ctx context.Context, args []string) *Server {
 	var bucket, cred string
 	fs := flag.NewFlagSet(args[0], flag.ExitOnError)
 	fs.StringVar(&s.srv.Addr, "addr", port, "host:port to serve on")
-	fs.StringVar(&bucket, "bucket", "gs://statslogger-seankhliao-com", "gcs bucket")
+	fs.StringVar(&bucket, "bucket", "statslogger-seankhliao-com", "gcs bucket")
 	fs.StringVar(&cred, "cred", "/var/secrets/google/sa.json", "service account json file path")
 	fs.Parse(args[1:])
 
@@ -119,6 +119,10 @@ func NewServer(ctx context.Context, args []string) *Server {
 	}
 	bkt := client.Bucket(bucket)
 	o := bkt.Object(fmt.Sprintf("log.%v.json", time.Now().Format(time.RFC3339)))
+	_, err = o.Attrs(ctx)
+	if err != nil {
+		s.log.Fatal().Str("obj", o.BucketName()+"/"+o.ObjectName()).Err(err).Msg("test attr")
+	}
 	s.w = o.NewWriter(ctx)
 	s.data = zerolog.New(s.w).With().Timestamp().Logger()
 
@@ -157,6 +161,7 @@ func (s *Server) json(w http.ResponseWriter, r *http.Request) {
 		remote = r.RemoteAddr
 	}
 
+	s.log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
 	s.data.Log().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
 	s.trigger.WithLabelValues(h).Inc()
 }
@@ -191,6 +196,7 @@ func (s *Server) form(w http.ResponseWriter, r *http.Request) {
 		remote = r.RemoteAddr
 	}
 
+	s.log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
 	s.data.Log().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
 	s.trigger.WithLabelValues(h).Inc()
 }
@@ -210,5 +216,8 @@ func (s *Server) Run() {
 		err = s.srv.Shutdown(ctx)
 	}
 	s.log.Error().Err(err).Msg("exit")
-	s.w.Close()
+	err = s.w.Close()
+	if err != nil {
+		s.log.Error().Err(err).Msg("close cloud writer")
+	}
 }
