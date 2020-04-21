@@ -66,7 +66,7 @@ type Server struct {
 	// server
 	ctx context.Context
 
-	w    *storage.Writer
+	bkt  *storage.BucketHandle
 	data zerolog.Logger
 
 	log zerolog.Logger
@@ -117,17 +117,9 @@ func NewServer(ctx context.Context, args []string) *Server {
 	if err != nil {
 		s.log.Fatal().Err(err).Str("cred", cred).Msg("configure storage client")
 	}
-	bkt := client.Bucket(bucket)
-	// attr, err := bkt.Attrs(ctx)
-	// s.log.Trace().Interface("attr", attr).Err(err).Msg("bucket attrs")
-	o := bkt.Object(fmt.Sprintf("log.%v.json", time.Now().Format(time.RFC3339)))
-	s.w = o.NewWriter(ctx)
-	// n, err := s.w.Write([]byte(`{"hello":"world"}` + "\n"))
-	// s.log.Trace().Int("n", n).Err(err).Msg("write")
+	s.bkt = client.Bucket(bucket)
 
-	s.data = zerolog.New(s.w).With().Timestamp().Logger()
-
-	s.log.Info().Str("addr", s.srv.Addr).Str("obj", o.ObjectName()).Msg("configured")
+	s.log.Info().Str("addr", s.srv.Addr).Msg("configured")
 	return s
 }
 
@@ -204,6 +196,9 @@ func (s *Server) form(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) Run() {
+	w := s.bkt.Object(fmt.Sprintf("log.%v.json", time.Now().Format(time.RFC3339))).NewWriter(context.Background())
+	s.data = zerolog.New(w).With().Timestamp().Logger()
+
 	errc := make(chan error)
 	go func() {
 		errc <- s.srv.ListenAndServe()
@@ -219,8 +214,7 @@ func (s *Server) Run() {
 	}
 	s.log.Error().Err(err).Msg("exit")
 
-	err = s.w.Close()
-	if err != nil {
+	if err = w.Close(); err != nil {
 		s.log.Error().Err(err).Msg("close cloud writer")
 	}
 }
