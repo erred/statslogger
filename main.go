@@ -118,12 +118,15 @@ func NewServer(ctx context.Context, args []string) *Server {
 		s.log.Fatal().Err(err).Str("cred", cred).Msg("configure storage client")
 	}
 	bkt := client.Bucket(bucket)
-	_, err = bkt.Attrs(ctx)
-	if err != nil {
-		s.log.Fatal().Str("bkt", bucket).Err(err).Msg("test attr")
-	}
+	// if _, err = bkt.Attrs(ctx); err != nil {
+	// 	s.log.Fatal().Str("bkt", bucket).Err(err).Msg("test attr")
+	// }
 	o := bkt.Object(fmt.Sprintf("log.%v.json", time.Now().Format(time.RFC3339)))
 	s.w = o.NewWriter(ctx)
+	if _, err := s.w.Write([]byte(`{"hello":"world"}` + "\n")); err != nil {
+		s.log.Fatal().Err(err).Msg("test write")
+	}
+
 	s.data = zerolog.New(s.w).With().Timestamp().Logger()
 
 	s.log.Info().Str("addr", s.srv.Addr).Str("obj", o.ObjectName()).Msg("configured")
@@ -156,6 +159,7 @@ func (s *Server) json(w http.ResponseWriter, r *http.Request) {
 		s.log.Error().Str("handler", h).Err(errors.New("invalid json")).Msg("validate body")
 		return
 	}
+
 	remote := r.Header.Get("x-forwarded-for")
 	if remote == "" {
 		remote = r.RemoteAddr
@@ -216,6 +220,7 @@ func (s *Server) Run() {
 		err = s.srv.Shutdown(ctx)
 	}
 	s.log.Error().Err(err).Msg("exit")
+
 	err = s.w.Close()
 	if err != nil {
 		s.log.Error().Err(err).Msg("close cloud writer")
