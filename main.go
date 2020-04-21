@@ -118,11 +118,11 @@ func NewServer(ctx context.Context, args []string) *Server {
 		s.log.Fatal().Err(err).Str("cred", cred).Msg("configure storage client")
 	}
 	bkt := client.Bucket(bucket)
-	o := bkt.Object(fmt.Sprintf("log.%v.json", time.Now().Format(time.RFC3339)))
-	_, err = o.Attrs(ctx)
+	_, err = bkt.Attrs(ctx)
 	if err != nil {
-		s.log.Fatal().Str("obj", o.BucketName()+"/"+o.ObjectName()).Err(err).Msg("test attr")
+		s.log.Fatal().Str("bkt", bucket).Err(err).Msg("test attr")
 	}
+	o := bkt.Object(fmt.Sprintf("log.%v.json", time.Now().Format(time.RFC3339)))
 	s.w = o.NewWriter(ctx)
 	s.data = zerolog.New(s.w).With().Timestamp().Logger()
 
