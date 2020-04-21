@@ -50,7 +50,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		sigs := make(chan os.Signal, 1)
-		signal.Notify(sigs, syscall.SIGINT)
+		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 		<-sigs
 		cancel()
 	}()
@@ -118,12 +118,12 @@ func NewServer(ctx context.Context, args []string) *Server {
 		s.log.Fatal().Err(err).Str("cred", cred).Msg("configure storage client")
 	}
 	bkt := client.Bucket(bucket)
-	attr, err := bkt.Attrs(ctx)
-	s.log.Trace().Interface("attr", attr).Err(err).Msg("bucket attrs")
+	// attr, err := bkt.Attrs(ctx)
+	// s.log.Trace().Interface("attr", attr).Err(err).Msg("bucket attrs")
 	o := bkt.Object(fmt.Sprintf("log.%v.json", time.Now().Format(time.RFC3339)))
 	s.w = o.NewWriter(ctx)
-	n, err := s.w.Write([]byte(`{"hello":"world"}` + "\n"))
-	s.log.Trace().Int("n", n).Err(err).Msg("write")
+	// n, err := s.w.Write([]byte(`{"hello":"world"}` + "\n"))
+	// s.log.Trace().Int("n", n).Err(err).Msg("write")
 
 	s.data = zerolog.New(s.w).With().Timestamp().Logger()
 
