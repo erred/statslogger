@@ -36,7 +36,7 @@ steps:
     args:
       - run
       - deploy
-      - vanity
+      - $_IMG
       - --image=$_REG/$PROJECT_ID/$_IMG:$TAG_NAME
       - --region=us-central1
       - --platform=managed

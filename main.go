@@ -19,7 +19,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
-	"google.golang.org/api/option"
 )
 
 const (
@@ -113,7 +112,8 @@ func NewServer(ctx context.Context, args []string) *Server {
 	fs.StringVar(&cred, "cred", "/var/secrets/google/sa.json", "service account json file path")
 	fs.Parse(args[1:])
 
-	client, err := storage.NewClient(ctx, option.WithCredentialsFile(cred))
+	// client, err := storage.NewClient(ctx, option.WithCredentialsFile(cred))
+	client, err := storage.NewClient(ctx)
 	if err != nil {
 		s.log.Fatal().Err(err).Str("cred", cred).Msg("configure storage client")
 	}
