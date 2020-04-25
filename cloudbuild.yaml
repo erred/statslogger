@@ -1,0 +1,31 @@
+substitutions:
+  _IMG: statslogger
+tags:
+  - $TAG_NAME
+  - $SHORT_SHA
+  - $COMMIT_SHA
+steps:
+  - id: login
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: /bin/bash
+    args:
+      - -c
+      - gcloud secrets versions access latest --secret=registries > /login/config.json
+    volumes:
+      - name: login
+        path: /login
+
+  - id: build-push
+    name: gcr.io/kaniko-project/executor:latest
+    args:
+      - -c=.
+      - -f=Dockerfile
+      - -d=us.gcr.io/$PROJECT_ID/$_IMG:latest
+      - -d=us.gcr.io/$PROJECT_ID/$_IMG:$TAG_NAME
+      - -d=index.docker.io/seankhliao/$_IMG:latest
+      - -d=index.docker.io/seankhliao/$_IMG:$TAG_NAME
+      - --reproducible
+      - --single-snapshot
+    volumes:
+      - name: login
+        path: /kaniko/.docker
