@@ -6,12 +6,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -19,22 +17,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
+	"go.seankhliao.com/usvc"
 )
 
 const (
 	redirectURL = "https://seankhliao.com/"
-)
-
-var (
-	port = func() string {
-		port := os.Getenv("PORT")
-		if port == "" {
-			port = ":8080"
-		} else if port[0] != ':' {
-			port = ":" + port
-		}
-		return port
-	}()
 )
 
 type event struct {
@@ -46,35 +33,23 @@ type event struct {
 }
 
 func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		sigs := make(chan os.Signal, 1)
-		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-		<-sigs
-		cancel()
-	}()
-
-	// server
-	NewServer(ctx, os.Args).Run()
+	s := NewServer(os.Args)
+	s.svc.Log.Error().Err(usvc.Run(usvc.SignalContext(), s)).Msg("exited")
 }
 
 type Server struct {
 	// metrics
 	trigger *prometheus.CounterVec
 
-	// server
-	ctx context.Context
-
-	bkt  *storage.BucketHandle
+	w    io.WriteCloser
 	data zerolog.Logger
 
-	log zerolog.Logger
-
-	mux *http.ServeMux
-	srv *http.Server
+	// server
+	svc *usvc.ServerSimple
 }
 
-func NewServer(ctx context.Context, args []string) *Server {
+func NewServer(args []string) *Server {
+	fs := flag.NewFlagSet(args[0], flag.ExitOnError)
 	s := &Server{
 		trigger: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "statslogger_trigger_count",
@@ -82,44 +57,28 @@ func NewServer(ctx context.Context, args []string) *Server {
 		},
 			[]string{"trigger"},
 		),
-		ctx: ctx,
-		// w set below
-		// data set below
-		log: zerolog.New(zerolog.ConsoleWriter{
-			Out: os.Stdout, NoColor: true, TimeFormat: time.RFC3339,
-		}).With().Timestamp().Logger(),
-		mux: http.NewServeMux(),
-		srv: &http.Server{
-			ReadHeaderTimeout: 5 * time.Second,
-			WriteTimeout:      5 * time.Second,
-			IdleTimeout:       60 * time.Second,
-		},
+		svc: usvc.NewServerSimple(usvc.NewConfig(fs)),
 	}
 
-	s.mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-	s.mux.HandleFunc("/form", s.form)
-	s.mux.HandleFunc("/json", s.json)
-	s.mux.Handle("/metrics", promhttp.Handler())
-	s.mux.Handle("/", http.RedirectHandler(redirectURL, http.StatusFound))
+	s.svc.Mux.HandleFunc("/form", s.form)
+	s.svc.Mux.HandleFunc("/json", s.json)
+	s.svc.Mux.Handle("/metrics", promhttp.Handler())
+	s.svc.Mux.Handle("/", http.RedirectHandler(redirectURL, http.StatusFound))
 
-	s.srv.Handler = s.mux
-	s.srv.ErrorLog = log.New(s.log, "", 0)
-
-	var bucket, cred string
-	fs := flag.NewFlagSet(args[0], flag.ExitOnError)
-	fs.StringVar(&s.srv.Addr, "addr", port, "host:port to serve on")
+	var bucket string
 	fs.StringVar(&bucket, "bucket", "statslogger-seankhliao-com", "gcs bucket")
-	fs.StringVar(&cred, "cred", "/var/secrets/google/sa.json", "service account json file path")
 	fs.Parse(args[1:])
 
-	// client, err := storage.NewClient(ctx, option.WithCredentialsFile(cred))
+	ctx := context.Background()
 	client, err := storage.NewClient(ctx)
 	if err != nil {
-		s.log.Fatal().Err(err).Str("cred", cred).Msg("configure storage client")
+		s.svc.Log.Fatal().Err(err).Msg("configure storage client")
 	}
-	s.bkt = client.Bucket(bucket)
+	obj := client.Bucket(bucket).Object(fmt.Sprintf("log.%v.json", time.Now().Format(time.RFC3339)))
+	s.w = obj.NewWriter(context.Background())
+	s.data = zerolog.New(s.w).With().Timestamp().Logger()
 
-	s.log.Info().Str("addr", s.srv.Addr).Msg("configured")
+	s.svc.Log.Info().Str("bucket", obj.BucketName()).Str("obj", obj.ObjectName()).Msg("configured")
 	return s
 }
 
@@ -142,11 +101,11 @@ func (s *Server) json(w http.ResponseWriter, r *http.Request) {
 	h := r.URL.Path
 	b, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		s.log.Error().Err(err).Str("handler", h).Msg("read body")
+		s.svc.Log.Error().Err(err).Str("handler", h).Msg("read body")
 		return
 	}
 	if !json.Valid(b) {
-		s.log.Error().Str("handler", h).Err(errors.New("invalid json")).Msg("validate body")
+		s.svc.Log.Error().Str("handler", h).Err(errors.New("invalid json")).Msg("validate body")
 		return
 	}
 
@@ -155,7 +114,7 @@ func (s *Server) json(w http.ResponseWriter, r *http.Request) {
 		remote = r.RemoteAddr
 	}
 
-	s.log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
+	s.svc.Log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
 	s.data.Log().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
 	s.trigger.WithLabelValues(h).Inc()
 }
@@ -182,7 +141,7 @@ func (s *Server) form(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	b, err := json.Marshal(r.Form)
 	if err != nil {
-		s.log.Error().Str("handler", h).Err(err).Msg("marshal to json")
+		s.svc.Log.Error().Str("handler", h).Err(err).Msg("marshal to json")
 	}
 
 	remote := r.Header.Get("x-forwarded-for")
@@ -190,31 +149,20 @@ func (s *Server) form(w http.ResponseWriter, r *http.Request) {
 		remote = r.RemoteAddr
 	}
 
-	s.log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
+	s.svc.Log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
 	s.data.Log().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
 	s.trigger.WithLabelValues(h).Inc()
 }
 
-func (s *Server) Run() {
-	w := s.bkt.Object(fmt.Sprintf("log.%v.json", time.Now().Format(time.RFC3339))).NewWriter(context.Background())
-	s.data = zerolog.New(w).With().Timestamp().Logger()
+func (s *Server) Run() error {
+	return s.svc.Run()
+}
 
-	errc := make(chan error)
-	go func() {
-		errc <- s.srv.ListenAndServe()
-	}()
-
-	var err error
-	select {
-	case err = <-errc:
-	case <-s.ctx.Done():
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		err = s.srv.Shutdown(ctx)
+func (s *Server) Shutdown() error {
+	err1 := s.svc.Shutdown()
+	err2 := s.w.Close()
+	if err1 != nil || err2 != nil {
+		return fmt.Errorf("svc shutdown: %v, writer shutdown: %v", err1, err2)
 	}
-	s.log.Error().Err(err).Msg("exit")
-
-	if err = w.Close(); err != nil {
-		s.log.Error().Err(err).Msg("close cloud writer")
-	}
+	return nil
 }
