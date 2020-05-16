@@ -1,22 +1,18 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"time"
 
-	"cloud.google.com/go/storage"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/rs/zerolog"
 	"go.seankhliao.com/usvc"
 )
 
@@ -41,9 +37,6 @@ type Server struct {
 	// metrics
 	trigger *prometheus.CounterVec
 
-	w    io.WriteCloser
-	data zerolog.Logger
-
 	// server
 	svc *usvc.ServerSimple
 }
@@ -65,20 +58,9 @@ func NewServer(args []string) *Server {
 	s.svc.Mux.Handle("/metrics", promhttp.Handler())
 	s.svc.Mux.Handle("/", http.RedirectHandler(redirectURL, http.StatusFound))
 
-	var bucket string
-	fs.StringVar(&bucket, "bucket", "statslogger-seankhliao-com", "gcs bucket")
 	fs.Parse(args[1:])
 
-	ctx := context.Background()
-	client, err := storage.NewClient(ctx)
-	if err != nil {
-		s.svc.Log.Fatal().Err(err).Msg("configure storage client")
-	}
-	obj := client.Bucket(bucket).Object(fmt.Sprintf("log.%v.json", time.Now().Format(time.RFC3339)))
-	s.w = obj.NewWriter(context.Background())
-	s.data = zerolog.New(s.w).With().Timestamp().Logger()
-
-	s.svc.Log.Info().Str("bucket", obj.BucketName()).Str("obj", obj.ObjectName()).Msg("configured")
+	s.svc.Log.Info().Msg("configured")
 	return s
 }
 
@@ -115,7 +97,6 @@ func (s *Server) json(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.svc.Log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
-	s.data.Log().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
 	s.trigger.WithLabelValues(h).Inc()
 }
 
@@ -150,7 +131,6 @@ func (s *Server) form(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.svc.Log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
-	s.data.Log().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
 	s.trigger.WithLabelValues(h).Inc()
 }
 
@@ -160,9 +140,8 @@ func (s *Server) Run() error {
 
 func (s *Server) Shutdown() error {
 	err1 := s.svc.Shutdown()
-	err2 := s.w.Close()
-	if err1 != nil || err2 != nil {
-		return fmt.Errorf("svc shutdown: %v, writer shutdown: %v", err1, err2)
+	if err1 != nil {
+		return fmt.Errorf("svc shutdown: %v", err1)
 	}
 	return nil
 }

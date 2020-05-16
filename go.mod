@@ -3,9 +3,9 @@ module go.seankhliao.com/statslogger
 go 1.14
 
 require (
-	cloud.google.com/go/storage v1.6.0
-	github.com/prometheus/client_golang v1.5.1
-	github.com/rs/zerolog v1.18.0
-	go.seankhliao.com/usvc v0.1.4
-	google.golang.org/api v0.21.0 // indirect
+	github.com/golang/protobuf v1.4.2 // indirect
+	github.com/prometheus/client_golang v1.6.0
+	github.com/prometheus/common v0.10.0 // indirect
+	go.seankhliao.com/usvc v0.1.6
+	golang.org/x/sys v0.0.0-20200515095857-1151b9dac4a9 // indirect
 )
