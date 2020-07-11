@@ -83,10 +83,12 @@ func (s *Server) json(w http.ResponseWriter, r *http.Request) {
 	h := r.URL.Path
 	b, err := ioutil.ReadAll(r.Body)
 	if err != nil {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		s.svc.Log.Error().Err(err).Str("handler", h).Msg("read body")
 		return
 	}
 	if !json.Valid(b) {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		s.svc.Log.Error().Str("handler", h).Err(errors.New("invalid json")).Msg("validate body")
 		return
 	}
@@ -96,7 +98,7 @@ func (s *Server) json(w http.ResponseWriter, r *http.Request) {
 		remote = r.RemoteAddr
 	}
 
-	s.svc.Log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
+	s.svc.Log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg(log(b))
 	s.trigger.WithLabelValues(h).Inc()
 }
 
@@ -122,15 +124,17 @@ func (s *Server) form(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	b, err := json.Marshal(r.Form)
 	if err != nil {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		s.svc.Log.Error().Str("handler", h).Err(err).Msg("marshal to json")
 	}
 
 	remote := r.Header.Get("x-forwarded-for")
 	if remote == "" {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		remote = r.RemoteAddr
 	}
 
-	s.svc.Log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg("received")
+	s.svc.Log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg(log(b))
 	s.trigger.WithLabelValues(h).Inc()
 }
 
@@ -144,4 +148,26 @@ func (s *Server) Shutdown() error {
 		return fmt.Errorf("svc shutdown: %v", err1)
 	}
 	return nil
+}
+
+func log(b []byte) string {
+	var m map[string]interface{}
+	err := json.Unmarshal(b, &m)
+	if err != nil {
+		return "received"
+	}
+	if report, ok := m["csp-report"]; ok {
+		m2, ok := report.(map[string]interface{})
+		if !ok {
+			return "received"
+		}
+		return fmt.Sprintf("csp policy %v blocked %v on %v", m2["violated-directive"], m2["blocked-uri"], m2["document-uri"])
+	} else if view, ok := m["trigger"]; ok {
+		m2, ok := view.(map[string]interface{})
+		if !ok {
+			return "received"
+		}
+		return fmt.Sprintf("viewed %v for %v", m2["src"].([]string)[0], m2["dur"].([]string)[0])
+	}
+	return "received"
 }
