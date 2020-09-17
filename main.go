@@ -1,19 +1,27 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/http/pprof"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"go.seankhliao.com/usvc"
+	"go.opentelemetry.io/otel/api/global"
+	"go.opentelemetry.io/otel/api/metric"
+	"go.opentelemetry.io/otel/api/unit"
+	"go.opentelemetry.io/otel/exporters/metric/prometheus"
+	"go.opentelemetry.io/otel/label"
+
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -29,125 +37,159 @@ type event struct {
 }
 
 func main() {
-	s := NewServer(os.Args)
-	s.svc.Log.Error().Err(usvc.Run(usvc.SignalContext(), s)).Msg("exited")
+	var s Server
+	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	fs.StringVar(&s.addr, "addr", ":8080", "listen addr")
+	fs.StringVar(&s.tlsCert, "tls-cert", "", "tls cert file")
+	fs.StringVar(&s.tlsKey, "tls-key", "", "tls key file")
+	fs.Parse(os.Args[1:])
+
+	promExporter, _ := prometheus.InstallNewPipeline(prometheus.Config{
+		DefaultHistogramBoundaries: []float64{1, 5, 10, 50, 100},
+	})
+	s.meter = global.Meter(os.Args[0])
+	s.endpoint = metric.Must(s.meter).NewInt64Counter(
+		"endpoint_hit",
+		metric.WithDescription("hits per endpoint"),
+	)
+	s.latency = metric.Must(s.meter).NewInt64ValueRecorder(
+		"serve_latency",
+		metric.WithDescription("http response latency"),
+		metric.WithUnit(unit.Milliseconds),
+	)
+
+	s.log = zerolog.New(os.Stdout).With().Timestamp().Logger()
+
+	m := http.NewServeMux()
+	m.HandleFunc("/form", s.form)
+	m.HandleFunc("/json", s.json)
+	m.Handle("/metrics", promExporter)
+	m.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	m.HandleFunc("/debug/pprof/", pprof.Index)
+	m.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	m.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	m.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	m.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	srv := &http.Server{
+		Addr:              s.addr,
+		Handler:           cors(m),
+		ReadTimeout:       5 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+		TLSConfig: &tls.Config{
+			MinVersion:               tls.VersionTLS13,
+			PreferServerCipherSuites: true,
+		},
+	}
+
+	if s.tlsKey != "" && s.tlsCert != "" {
+		cert, err := tls.LoadX509KeyPair(s.tlsCert, s.tlsKey)
+		if err != nil {
+			s.log.Error().Err(err).Msg("laod tls keys")
+			return
+		}
+		srv.TLSConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+		<-c
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		go func() {
+			<-c
+			cancel()
+		}()
+		err := srv.Shutdown(ctx)
+		if err != nil {
+			s.log.Error().Err(err).Msg("unclean shutdown")
+		}
+	}()
+
+	err := srv.ListenAndServe()
+	if err != nil {
+		s.log.Error().Err(err).Msg("serve")
+	}
 }
 
 type Server struct {
-	// metrics
-	trigger *prometheus.CounterVec
+	meter    metric.Meter
+	endpoint metric.Int64Counter
+	latency  metric.Int64ValueRecorder
 
-	// server
-	svc *usvc.ServerSimple
-}
+	log zerolog.Logger
 
-func NewServer(args []string) *Server {
-	fs := flag.NewFlagSet(args[0], flag.ExitOnError)
-	s := &Server{
-		trigger: promauto.NewCounterVec(prometheus.CounterOpts{
-			Name: "statslogger_trigger_count",
-			Help: "trigger of a event record",
-		},
-			[]string{"trigger"},
-		),
-		svc: usvc.NewServerSimple(usvc.NewConfig(fs)),
-	}
-
-	s.svc.Mux.HandleFunc("/form", s.form)
-	s.svc.Mux.HandleFunc("/json", s.json)
-	s.svc.Mux.Handle("/metrics", promhttp.Handler())
-	s.svc.Mux.Handle("/", http.RedirectHandler(redirectURL, http.StatusFound))
-
-	fs.Parse(args[1:])
-
-	s.svc.Log.Info().Msg("configured")
-	return s
+	addr    string
+	tlsCert string
+	tlsKey  string
 }
 
 func (s *Server) json(w http.ResponseWriter, r *http.Request) {
-	// filter methods
-	switch r.Method {
-	case http.MethodOptions:
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-		w.WriteHeader(http.StatusNoContent)
-		return
-	case http.MethodPost:
-		w.WriteHeader(http.StatusNoContent)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	defer r.Body.Close()
+	// get data
+	t := time.Now()
 	h := r.URL.Path
-	b, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		s.svc.Log.Error().Err(err).Str("handler", h).Msg("read body")
-		return
-	}
-	if !json.Valid(b) {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		s.svc.Log.Error().Str("handler", h).Err(errors.New("invalid json")).Msg("validate body")
-		return
-	}
-
 	remote := r.Header.Get("x-forwarded-for")
 	if remote == "" {
 		remote = r.RemoteAddr
 	}
+	ua := r.Header.Get("user-agent")
 
-	s.svc.Log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg(log(b))
-	s.trigger.WithLabelValues(h).Inc()
+	defer func() {
+		s.latency.Record(r.Context(), time.Since(t).Milliseconds())
+		s.endpoint.Add(r.Context(), 1, label.String("endpoint", "json"))
+
+		s.log.Debug().Str("path", r.URL.Path).Str("src", remote).Str("endpoint", "json").Str("user-agent", ua).Msg("served")
+	}()
+
+	defer r.Body.Close()
+	b, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		s.log.Error().Err(err).Str("handler", h).Msg("read body")
+		return
+	}
+	if !json.Valid(b) {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		s.log.Error().Str("handler", h).Err(errors.New("invalid json")).Msg("validate body")
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	s.log.Info().RawJSON("data", b).Msg(log(b))
 }
 
 // ServeHTTP handles recording of events
 // /record?trigger=ping&src=...&dst=...
 func (s *Server) form(w http.ResponseWriter, r *http.Request) {
-	// filter methods
-	switch r.Method {
-	case http.MethodOptions:
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-		w.WriteHeader(http.StatusNoContent)
-		return
-	case http.MethodGet, http.MethodPost:
-		w.WriteHeader(http.StatusNoContent)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
+	// get data
+	t := time.Now()
+	h := r.URL.Path
+	remote := r.Header.Get("x-forwarded-for")
+	if remote == "" {
+		remote = r.RemoteAddr
 	}
+	ua := r.Header.Get("user-agent")
+
+	defer func() {
+		s.latency.Record(r.Context(), time.Since(t).Milliseconds())
+		s.endpoint.Add(r.Context(), 1, label.String("endpoint", "form"))
+
+		s.log.Debug().Str("path", r.URL.Path).Str("src", remote).Str("endpoint", "json").Str("user-agent", ua).Msg("served")
+	}()
 
 	// get data
-	h := r.URL.Path
 	r.ParseForm()
 	b, err := json.Marshal(r.Form)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		s.svc.Log.Error().Str("handler", h).Err(err).Msg("marshal to json")
+		s.log.Error().Str("handler", h).Err(err).Msg("marshal to json")
 	}
 
-	remote := r.Header.Get("x-forwarded-for")
-	if remote == "" {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		remote = r.RemoteAddr
-	}
-
-	s.svc.Log.Debug().Str("handler", h).Str("remote", remote).RawJSON("data", b).Msg(log(b))
-	s.trigger.WithLabelValues(h).Inc()
-}
-
-func (s *Server) Run() error {
-	return s.svc.Run()
-}
-
-func (s *Server) Shutdown() error {
-	err1 := s.svc.Shutdown()
-	if err1 != nil {
-		return fmt.Errorf("svc shutdown: %v", err1)
-	}
-	return nil
+	w.WriteHeader(http.StatusOK)
+	s.log.Info().RawJSON("data", b).Msg(log(b))
 }
 
 func log(b []byte) string {
@@ -170,4 +212,22 @@ func log(b []byte) string {
 		return fmt.Sprintf("viewed %v for %v", m2["src"].([]string)[0], m2["dur"].([]string)[0])
 	}
 	return "received"
+}
+
+func cors(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodOptions:
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		case http.MethodGet, http.MethodPost:
+			h.ServeHTTP(w, r)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+	})
 }
