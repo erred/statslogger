@@ -224,6 +224,9 @@ func cors(h http.Handler) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		case http.MethodGet, http.MethodPost:
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST")
+			w.Header().Set("Access-Control-Max-Age", "86400")
 			h.ServeHTTP(w, r)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
