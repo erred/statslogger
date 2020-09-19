@@ -50,15 +50,9 @@ func main() {
 }
 
 type Server struct {
-	meter    metric.Meter
 	endpoint metric.Int64Counter
-	latency  metric.Int64ValueRecorder
 
 	log zerolog.Logger
-
-	addr    string
-	tlsCert string
-	tlsKey  string
 }
 
 func (s *Server) json(w http.ResponseWriter, r *http.Request) {
