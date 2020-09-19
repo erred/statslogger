@@ -11,14 +11,14 @@ import (
 	"os"
 	"time"
 
+	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/api/global"
 	"go.opentelemetry.io/otel/api/metric"
-
-	"github.com/rs/zerolog"
+	"go.seankhliao.com/usvc"
 )
 
 func main() {
-	var srvconf HTTPServerConf
+	var srvconf usvc.Conf
 	var s Server
 
 	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
