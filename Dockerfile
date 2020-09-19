@@ -1,9 +1,8 @@
 FROM golang:alpine AS build
 
 WORKDIR /workspace
-ENV CGO_ENABLED=0
 COPY . .
-RUN go build -trimpath -o /bin/statslogger
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /bin/statslogger
 
 
 FROM scratch
