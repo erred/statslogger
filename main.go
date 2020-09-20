@@ -31,7 +31,7 @@ func main() {
 	m.HandleFunc("/form", s.form)
 	m.HandleFunc("/json", s.json)
 
-	err := srvc.RunServer(context.Background(), m, s.log)
+	err := srvc.RunHTTP(context.Background(), m)
 	if err != nil {
 		s.log.Fatal().Err(err).Msg("run server")
 	}
