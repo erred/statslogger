@@ -114,7 +114,6 @@ func (s *Server) csp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-	s.log.Debug().Str("handler", h).Msg("served csp")
 }
 
 func (s *Server) beacon(w http.ResponseWriter, r *http.Request) {
@@ -149,5 +148,4 @@ func (s *Server) beacon(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-	s.log.Debug().Str("handler", h).Msg("served beacon")
 }
