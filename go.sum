@@ -113,6 +113,8 @@ go.opentelemetry.io/otel/sdk v0.11.0 h1:bkDMymVj6gIkPfgC5ci5atq0OYbfUHSn8Nvsmyfy
 go.opentelemetry.io/otel/sdk v0.11.0/go.mod h1:XbZ6MrzIZ+d+qr7pH0FwHIbCnANMvXYgkq4afL/IUMQ=
 go.seankhliao.com/usvc v0.4.0 h1:MiXA0m9HbIpO5CQhmudZUkc/lz8TH75bH2V/60pZvlM=
 go.seankhliao.com/usvc v0.4.0/go.mod h1:HjOdYRx3daJBXmU+dbLGO3UXI7x7zxG7Jw2zkfWFSeo=
+go.seankhliao.com/usvc v0.4.1 h1:KghHHs/q2/8yGs2+HyX2VNLA3PZtnEe21koAPRLp9uk=
+go.seankhliao.com/usvc v0.4.1/go.mod h1:HjOdYRx3daJBXmU+dbLGO3UXI7x7zxG7Jw2zkfWFSeo=
 golang.org/x/crypto v0.0.0-20180904163835-0709b304e793/go.mod h1:6SG95UA2DQfeDnfUPMdvaQW0Q7yPrPDi9nlGo2tz2b4=
 golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
 golang.org/x/exp v0.0.0-20190121172915-509febef88a4/go.mod h1:CJ0aWSM057203Lf6IL+f9T1iT9GByDxfZKAQTCR3kQA=

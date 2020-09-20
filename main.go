@@ -3,23 +3,25 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"io/ioutil"
+	"flag"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/api/global"
 	"go.opentelemetry.io/otel/api/metric"
+	"go.seankhliao.com/stream"
 	"go.seankhliao.com/usvc"
+	"google.golang.org/grpc"
 )
 
 func main() {
 	var s Server
 
-	srvc := usvc.DefaultConf()
+	srvc := usvc.DefaultConf(&s)
 	s.log = srvc.Logger()
 
 	s.endpoint = metric.Must(global.Meter(os.Args[0])).NewInt64Counter(
@@ -27,13 +29,20 @@ func main() {
 		metric.WithDescription("hits per endpoint"),
 	)
 
-	m := http.NewServeMux()
-	m.HandleFunc("/form", s.form)
-	m.HandleFunc("/json", s.json)
-
-	err := srvc.RunHTTP(context.Background(), m)
+	cc, err := grpc.Dial(s.streamAddr)
 	if err != nil {
-		s.log.Fatal().Err(err).Msg("run server")
+		s.log.Error().Err(err).Msg("connect to stream")
+	}
+	defer cc.Close()
+	s.client = stream.NewStreamClient(cc)
+
+	m := http.NewServeMux()
+	m.HandleFunc("/csp", s.csp)
+	m.HandleFunc("/beacon", s.beacon)
+
+	err = srvc.RunHTTP(context.Background(), m)
+	if err != nil {
+		s.log.Error().Err(err).Msg("run server")
 	}
 }
 
@@ -41,71 +50,104 @@ type Server struct {
 	endpoint metric.Int64Counter
 
 	log zerolog.Logger
+
+	streamAddr string
+	client     stream.StreamClient
 }
 
-func (s *Server) json(w http.ResponseWriter, r *http.Request) {
-	h := r.URL.Path
+func (s *Server) RegisterFlags(fs *flag.FlagSet) {
+	fs.StringVar(&s.streamAddr, "stream.addr", "stream:80", "url to connect to stream")
+}
 
-	defer r.Body.Close()
-	b, err := ioutil.ReadAll(r.Body)
+type CSPReport struct {
+	CspReport struct {
+		OriginalPolicy     string `json:"original-policy"`
+		ViolatedDirective  string `json:"violated-directive"`
+		Referrer           string `json:"referrer"`
+		ScriptSample       string `json:"script-sample"`
+		StatusCode         int64  `json:"status-code"`
+		LineNumber         int64  `json:"line-number"`
+		Disposition        string `json:"disposition"`
+		BlockedURI         string `json:"blocked-uri"`
+		EffectiveDirective string `json:"effective-directive"`
+		DocumentURI        string `json:"document-uri"`
+		SourceFile         string `json:"source-file"`
+	} `json:"csp-report"`
+}
+
+func (s *Server) csp(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	h := r.URL.Path
+	remote := r.Header.Get("x-forwarded-for")
+	if remote == "" {
+		remote = r.RemoteAddr
+	}
+
+	var cspReport CSPReport
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&cspReport)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		s.log.Error().Err(err).Str("handler", h).Msg("read body")
-		return
-	}
-	if !json.Valid(b) {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		s.log.Error().Str("handler", h).Err(errors.New("invalid json")).Msg("validate body")
+		s.log.Error().Str("handler", h).Err(err).Msg("unmarshal csp report")
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	s.log.Info().RawJSON("data", b).Msg(log(b))
+	cspRequest := &stream.CSPRequest{
+		Timestamp:          time.Now().Format(time.RFC3339),
+		Remote:             remote,
+		UserAgent:          r.UserAgent(),
+		Referrer:           r.Referer(),
+		Enforce:            cspReport.CspReport.Disposition,
+		BlockedUri:         cspReport.CspReport.BlockedURI,
+		SourceFile:         cspReport.CspReport.SourceFile,
+		DocumentUri:        cspReport.CspReport.DocumentURI,
+		ViolatedDirective:  cspReport.CspReport.ViolatedDirective,
+		EffectiveDirective: cspReport.CspReport.EffectiveDirective,
+		StatusCode:         cspReport.CspReport.StatusCode,
+		LineNumber:         cspReport.CspReport.LineNumber,
+	}
+
+	_, err = s.client.LogCSP(ctx, cspRequest)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		s.log.Error().Str("handler", h).Err(err).Msg("write to stream")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+	s.log.Debug().Str("handler", h).Msg("served csp")
 }
 
-// ServeHTTP handles recording of events
-// /record?trigger=ping&src=...&dst=...
-func (s *Server) form(w http.ResponseWriter, r *http.Request) {
+func (s *Server) beacon(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
 	h := r.URL.Path
+	remote := r.Header.Get("x-forwarded-for")
+	if remote == "" {
+		remote = r.RemoteAddr
+	}
 
 	// get data
 	r.ParseForm()
-	b, err := json.Marshal(r.Form)
+	dur, err := strconv.ParseInt(strings.TrimSuffix(r.FormValue("dur"), "ms"), 10, 64)
 	if err != nil {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		s.log.Error().Str("handler", h).Err(err).Msg("marshal to json")
+		s.log.Warn().Str("handler", h).Err(err).Msg("parse duration")
+	}
+	beaconRequest := &stream.BeaconRequest{
+		DurationMs: dur,
+		SrcPage:    r.FormValue("src"),
+		DstPage:    r.FormValue("dst"),
+		Remote:     remote,
+		UserAgent:  r.UserAgent(),
+		Referrer:   r.FormValue("referrer"),
 	}
 
-	w.WriteHeader(http.StatusOK)
-	s.log.Info().RawJSON("data", b).Msg(log(b))
-}
-
-type event struct {
-	Time     time.Time
-	Remote   string
-	Trigger  string
-	Src, Dst string
-	Dur      string
-}
-
-func log(b []byte) string {
-	var m map[string]interface{}
-	err := json.Unmarshal(b, &m)
+	_, err = s.client.LogBeacon(ctx, beaconRequest)
 	if err != nil {
-		return "received"
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		s.log.Error().Str("handler", h).Err(err).Msg("write to stream")
+		return
 	}
-	if report, ok := m["csp-report"]; ok {
-		m2, ok := report.(map[string]interface{})
-		if !ok {
-			return "received"
-		}
-		return fmt.Sprintf("csp policy %v blocked %v on %v", m2["violated-directive"], m2["blocked-uri"], m2["document-uri"])
-	} else if view, ok := m["trigger"]; ok {
-		m2, ok := view.(map[string]interface{})
-		if !ok {
-			return "received"
-		}
-		return fmt.Sprintf("viewed %v for %v", m2["src"].([]string)[0], m2["dur"].([]string)[0])
-	}
-	return "received"
+
+	w.WriteHeader(http.StatusNoContent)
+	s.log.Debug().Str("handler", h).Msg("served beacon")
 }
