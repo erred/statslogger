@@ -1,0 +1,18 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/name: statsologger
+  name: statsologger
+spec:
+  secretName: statslogger-cert
+  duration: 87600h # 10 years
+  renewBefore: 360h
+  dnsNames:
+    - "statsologger"
+    - "statsologger.default"
+    - "statsologger.default.svc"
+    - "statsologger.default.svc.cluster.local"
+  issuerRef:
+    name: internal-ca
+    kind: ClusterIssuer
