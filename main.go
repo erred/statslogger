@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -18,32 +19,14 @@ import (
 	"google.golang.org/grpc"
 )
 
+const (
+	name = "statslogger"
+)
+
 func main() {
 	var s Server
 
-	srvc := usvc.DefaultConf(&s)
-	s.log = srvc.Logger()
-
-	s.endpoint = metric.Must(global.Meter(os.Args[0])).NewInt64Counter(
-		"endpoint_hit",
-		metric.WithDescription("hits per endpoint"),
-	)
-
-	cc, err := grpc.Dial(s.streamAddr, grpc.WithInsecure())
-	if err != nil {
-		s.log.Error().Err(err).Msg("connect to stream")
-	}
-	defer cc.Close()
-	s.client = stream.NewStreamClient(cc)
-
-	m := http.NewServeMux()
-	m.HandleFunc("/csp", s.csp)
-	m.HandleFunc("/beacon", s.beacon)
-
-	err = srvc.RunHTTP(context.Background(), m)
-	if err != nil {
-		s.log.Error().Err(err).Msg("run server")
-	}
+	usvc.Run(context.Background(), name, &s, false)
 }
 
 type Server struct {
@@ -53,10 +36,35 @@ type Server struct {
 
 	streamAddr string
 	client     stream.StreamClient
+	cc         *grpc.ClientConn
 }
 
-func (s *Server) RegisterFlags(fs *flag.FlagSet) {
+func (s *Server) Flag(fs *flag.FlagSet) {
 	fs.StringVar(&s.streamAddr, "stream.addr", "stream:80", "url to connect to stream")
+}
+
+func (s *Server) Register(c *usvc.Components) error {
+	s.log = c.Log
+
+	s.endpoint = metric.Must(global.Meter(os.Args[0])).NewInt64Counter(
+		"endpoint_hit",
+		metric.WithDescription("hits per endpoint"),
+	)
+
+	c.HTTP.HandleFunc("/csp", s.csp)
+	c.HTTP.HandleFunc("/beacon", s.beacon)
+
+	var err error
+	s.cc, err = grpc.Dial(s.streamAddr, grpc.WithInsecure())
+	if err != nil {
+		return fmt.Errorf("connect to stream: %w", err)
+	}
+	s.client = stream.NewStreamClient(s.cc)
+	return nil
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.cc.Close()
 }
 
 type CSPReport struct {
