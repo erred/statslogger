@@ -2,8 +2,8 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   labels:
-    app.kubernetes.io/name: statsologger
-  name: statsologger
+    app.kubernetes.io/name: statslogger
+  name: statslogger
 spec:
   secretName: statslogger-cert
   duration: 87600h # 10 years
