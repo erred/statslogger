@@ -9,10 +9,10 @@ spec:
   duration: 87600h # 10 years
   renewBefore: 360h
   dnsNames:
-    - "statsologger"
-    - "statsologger.default"
-    - "statsologger.default.svc"
-    - "statsologger.default.svc.cluster.local"
+    - "statslogger"
+    - "statslogger.default"
+    - "statslogger.default.svc"
+    - "statslogger.default.svc.cluster.local"
   issuerRef:
     name: internal-ca
     kind: ClusterIssuer
