@@ -14,7 +14,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/api/global"
 	"go.opentelemetry.io/otel/api/metric"
-	"go.seankhliao.com/stream"
+	"go.seankhliao.com/apis/saver/v1"
 	"go.seankhliao.com/usvc"
 	"google.golang.org/grpc"
 )
@@ -24,9 +24,7 @@ const (
 )
 
 func main() {
-	var s Server
-
-	usvc.Run(context.Background(), name, &s, false)
+	usvc.Run(context.Background(), name, &Server{}, false)
 }
 
 type Server struct {
@@ -34,13 +32,13 @@ type Server struct {
 
 	log zerolog.Logger
 
-	streamAddr string
-	client     stream.StreamClient
-	cc         *grpc.ClientConn
+	saverAddr string
+	client    saver.SaverClient
+	cc        *grpc.ClientConn
 }
 
 func (s *Server) Flag(fs *flag.FlagSet) {
-	fs.StringVar(&s.streamAddr, "stream.addr", "stream:80", "url to connect to stream")
+	fs.StringVar(&s.saverAddr, "saver.addr", "saver:443", "url to connect to stream")
 }
 
 func (s *Server) Register(c *usvc.Components) error {
@@ -55,11 +53,11 @@ func (s *Server) Register(c *usvc.Components) error {
 	c.HTTP.HandleFunc("/beacon", s.beacon)
 
 	var err error
-	s.cc, err = grpc.Dial(s.streamAddr, grpc.WithInsecure())
+	s.cc, err = grpc.Dial(s.saverAddr, grpc.WithInsecure())
 	if err != nil {
 		return fmt.Errorf("connect to stream: %w", err)
 	}
-	s.client = stream.NewStreamClient(s.cc)
+	s.client = saver.NewSaverClient(s.cc)
 	return nil
 }
 
@@ -100,12 +98,14 @@ func (s *Server) csp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cspRequest := &stream.CSPRequest{
-		Timestamp:          time.Now().Format(time.RFC3339),
-		Remote:             remote,
-		UserAgent:          r.UserAgent(),
-		Referrer:           r.Referer(),
-		Enforce:            cspReport.CspReport.Disposition,
+	cspRequest := &saver.CSPRequest{
+		HttpRemote: &saver.HTTPRemote{
+			Timestamp: time.Now().Format(time.RFC3339),
+			Remote:    remote,
+			UserAgent: r.UserAgent(),
+			Referrer:  r.Referer(),
+		},
+		Disposition:        cspReport.CspReport.Disposition,
 		BlockedUri:         cspReport.CspReport.BlockedURI,
 		SourceFile:         cspReport.CspReport.SourceFile,
 		DocumentUri:        cspReport.CspReport.DocumentURI,
@@ -115,10 +115,10 @@ func (s *Server) csp(w http.ResponseWriter, r *http.Request) {
 		LineNumber:         cspReport.CspReport.LineNumber,
 	}
 
-	_, err = s.client.LogCSP(ctx, cspRequest)
+	_, err = s.client.CSP(ctx, cspRequest)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		s.log.Error().Str("handler", h).Err(err).Msg("write to stream")
+		s.log.Error().Str("handler", h).Err(err).Msg("write to saver")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -139,21 +139,23 @@ func (s *Server) beacon(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.log.Warn().Str("handler", h).Err(err).Msg("parse duration")
 	}
-	beaconRequest := &stream.BeaconRequest{
+	beaconRequest := &saver.BeaconRequest{
+		HttpRemote: &saver.HTTPRemote{
+			Timestamp: time.Now().Format(time.RFC3339),
+			Remote:    remote,
+			UserAgent: r.UserAgent(),
+			Referrer:  r.Referer(),
+		},
 		DurationMs: dur,
 		SrcPage:    r.FormValue("src"),
 		DstPage:    r.FormValue("dst"),
-		Remote:     remote,
-		UserAgent:  r.UserAgent(),
-		Referrer:   r.FormValue("referrer"),
 	}
 
-	_, err = s.client.LogBeacon(ctx, beaconRequest)
+	_, err = s.client.Beacon(ctx, beaconRequest)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		s.log.Error().Str("handler", h).Err(err).Msg("write to stream")
+		s.log.Error().Str("handler", h).Err(err).Msg("write to saver")
 		return
 	}
-
 	w.WriteHeader(http.StatusNoContent)
 }
