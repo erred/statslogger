@@ -11,46 +11,53 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/api/global"
-	"go.opentelemetry.io/otel/api/metric"
+	"go.opentelemetry.io/otel/api/trace"
 	"go.seankhliao.com/apis/saver/v1"
 	"go.seankhliao.com/usvc"
 	"google.golang.org/grpc"
 )
 
 const (
-	name = "statslogger"
+	name = "go.seankhliao.com/statslogger"
 )
 
 func main() {
-	usvc.Run(context.Background(), name, &Server{}, false)
+	os.Exit(usvc.Exec(context.Background(), &Server{}, os.Args))
 }
 
 type Server struct {
-	endpoint metric.Int64Counter
-
-	log zerolog.Logger
-
 	saverAddr string
 	client    saver.SaverClient
 	cc        *grpc.ClientConn
+
+	log    zerolog.Logger
+	tracer trace.Tracer
+
+	cspc    prometheus.Counter
+	beaconc prometheus.Counter
 }
 
-func (s *Server) Flag(fs *flag.FlagSet) {
-	fs.StringVar(&s.saverAddr, "saver.addr", "saver:443", "url to connect to stream")
+func (s *Server) Flags(fs *flag.FlagSet) {
+	fs.StringVar(&s.saverAddr, "saver", "saver:443", "url to connect to stream")
 }
 
-func (s *Server) Register(c *usvc.Components) error {
-	s.log = c.Log
+func (s *Server) Setup(ctx context.Context, u *usvc.USVC) error {
+	s.log = u.Logger
+	s.tracer = global.Tracer(name)
 
-	s.endpoint = metric.Must(global.Meter(os.Args[0])).NewInt64Counter(
-		"endpoint_hit",
-		metric.WithDescription("hits per endpoint"),
-	)
+	s.cspc = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "statslogger_csp_requests",
+	})
+	s.beaconc = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "statslogger_beacon_requests",
+	})
 
-	c.HTTP.HandleFunc("/csp", s.csp)
-	c.HTTP.HandleFunc("/beacon", s.beacon)
+	u.ServiceMux.HandleFunc("/csp", s.csp)
+	u.ServiceMux.HandleFunc("/beacon", s.beacon)
 
 	var err error
 	s.cc, err = grpc.Dial(s.saverAddr, grpc.WithInsecure())
@@ -58,11 +65,13 @@ func (s *Server) Register(c *usvc.Components) error {
 		return fmt.Errorf("connect to stream: %w", err)
 	}
 	s.client = saver.NewSaverClient(s.cc)
-	return nil
-}
 
-func (s *Server) Shutdown(ctx context.Context) error {
-	return s.cc.Close()
+	go func() {
+		<-ctx.Done()
+		s.cc.Close()
+	}()
+
+	return nil
 }
 
 type CSPReport struct {
@@ -82,7 +91,8 @@ type CSPReport struct {
 }
 
 func (s *Server) csp(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, span := s.tracer.Start(r.Context(), "csp")
+	defer span.End()
 
 	h := r.URL.Path
 	remote := r.Header.Get("x-forwarded-for")
@@ -125,7 +135,8 @@ func (s *Server) csp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) beacon(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, span := s.tracer.Start(r.Context(), "beacon")
+	defer span.End()
 
 	h := r.URL.Path
 	remote := r.Header.Get("x-forwarded-for")
