@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel/api/global"
 	"go.opentelemetry.io/otel/api/trace"
 	"go.seankhliao.com/apis/saver/v1"
@@ -60,7 +61,7 @@ func (s *Server) Setup(ctx context.Context, u *usvc.USVC) error {
 	u.ServiceMux.HandleFunc("/beacon", s.beacon)
 
 	var err error
-	s.cc, err = grpc.Dial(s.saverAddr, grpc.WithInsecure())
+	s.cc, err = grpc.Dial(s.saverAddr, grpc.WithInsecure(), grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(s.tracer)))
 	if err != nil {
 		return fmt.Errorf("connect to stream: %w", err)
 	}
