@@ -20,6 +20,7 @@ import (
 	"go.seankhliao.com/apis/saver/v1"
 	"go.seankhliao.com/usvc"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 const (
@@ -43,7 +44,7 @@ type Server struct {
 }
 
 func (s *Server) Flags(fs *flag.FlagSet) {
-	fs.StringVar(&s.saverAddr, "saver", "saver:443", "url to connect to stream")
+	fs.StringVar(&s.saverAddr, "saver", "saver:443", "url to connect to saver")
 }
 
 func (s *Server) Setup(ctx context.Context, u *usvc.USVC) error {
@@ -61,7 +62,7 @@ func (s *Server) Setup(ctx context.Context, u *usvc.USVC) error {
 	u.ServiceMux.HandleFunc("/beacon", s.beacon)
 
 	var err error
-	s.cc, err = grpc.Dial(s.saverAddr, grpc.WithInsecure(), grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(s.tracer)))
+	s.cc, err = grpc.Dial(s.saverAddr, grpc.WithTransportCredentials(credentials.NewTLS(u.ServiceServer.TLSConfig)), grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(s.tracer)))
 	if err != nil {
 		return fmt.Errorf("connect to stream: %w", err)
 	}
