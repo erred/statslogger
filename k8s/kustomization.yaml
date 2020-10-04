@@ -3,11 +3,12 @@ kind: Kustomization
 commonLabels:
   app.kubernetes.io/name: statslogger
   app.kubernetes.io/managed-by: kustomize
+namespace: apps
 resources:
   - cert.yaml
   - deployment.k8s.yaml
   - service.k8s.yaml
 images:
   - name: us.gcr.io/com-seankhliao/statslogger
-    newName: seankhliao/statslogger
+    newName: reg.seankhliao.com/statslogger
     # newTag: IMAGE_TAG
