@@ -23,12 +23,12 @@ steps:
           --secret=cluster-kubectl-creds \
           --format='get(payload.data)' \
           | tr '_-' '/+' \
-          | base64 -d > /root/.config/kube/config
+          | base64 -d > /root/.kube/config
     volumes:
       - name: registry-creds
         path: /kaniko/.docker
       - name: cluster-creds
-        path: /root/.config/kube
+        path: /root/.kube
 
   - id: build-push
     name: gcr.io/kaniko-project/executor:latest
@@ -54,4 +54,4 @@ steps:
         kubectl apply -k k8s
     volumes:
       - name: cluster-creds
-        path: /root/.config/kube
+        path: /root/.kube
