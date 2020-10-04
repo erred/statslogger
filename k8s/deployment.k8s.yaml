@@ -1,0 +1,55 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  labels:
+    app.kubernetes.io/name: statslogger
+  name: statslogger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: statslogger
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: statslogger
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+    spec:
+      securityContext:
+        fsGroup: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: statslogger
+          image: us.gcr.io/com-seankhliao/statslogger:latest
+          ports:
+            - name: https
+              containerPort: 8080
+            - name: metrics
+              containerPort: 8000
+          # env:
+          #   - name: JAEGER_SERVICE_NAME
+          #     value: statslogger
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: 8000
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8000
+          volumeMounts:
+            - name: certs
+              mountPath: /var/secret/tls
+      volumes:
+        - name: certs
+          secret:
+            secretName: statslogger-cert

@@ -1,28 +1,45 @@
 substitutions:
   _IMG: statslogger
-  _REG: us.gcr.io
+  _REG: reg.seankhliao.com
 tags:
   - $SHORT_SHA
   - $COMMIT_SHA
 steps:
+  - id: login
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gcloud secrets versions access latest \
+          --secret=docker-registry-creds \
+          --format='get(payload.data)' \
+          | tr '_-' '/+' \
+          | base64 -d > /kaniko/.docker/config.json
+    volumes:
+      - name: creds
+        path: /kaniko/.docker
   - id: build-push
     name: gcr.io/kaniko-project/executor:latest
     args:
       - -c=.
       - -f=Dockerfile
-      - -d=$_REG/$PROJECT_ID/$_IMG:latest
-      - -d=$_REG/$PROJECT_ID/$_IMG:$SHORT_SHA
+      - -d=$_REG/$_IMG:latest
+      - -d=$_REG/$_IMG:$SHORT_SHA
       - --reproducible
       - --single-snapshot
-  - id: deploy
-    name: gcr.io/cloud-builders/kubectl:latest
-    entrypoint: /bin/sh
-    args:
-      - -c
-      - |
-        set -ex; \
-        sed -i 's/# newTag: IMAGE_TAG/newTag: "$SHORT_SHA"/' k8s/kustomization.yaml && \
-        /builder/kubectl.bash apply -k k8s
-    env:
-      - CLOUDSDK_COMPUTE_ZONE=us-central1-c
-      - CLOUDSDK_CONTAINER_CLUSTER=cluster23
+    volumes:
+      - name: creds
+        path: /kaniko/.docker
+  # - id: deploy
+  #   name: gcr.io/cloud-builders/kubectl:latest
+  #   entrypoint: /bin/sh
+  #   args:
+  #     - -c
+  #     - |
+  #       set -ex; \
+  #       sed -i 's/# newTag: IMAGE_TAG/newTag: "$SHORT_SHA"/' k8s/kustomization.yaml && \
+  #       /builder/kubectl.bash apply -k k8s
+  #   env:
+  #     - CLOUDSDK_COMPUTE_ZONE=us-central1-c
+  #     - CLOUDSDK_CONTAINER_CLUSTER=cluster23

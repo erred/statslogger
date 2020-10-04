@@ -10,9 +10,7 @@ spec:
   renewBefore: 360h
   dnsNames:
     - "statslogger"
-    - "statslogger.default"
-    - "statslogger.default.svc"
-    - "statslogger.default.svc.cluster.local"
+    - "statslogger.apps.svc.cluster.local"
   issuerRef:
     name: internal-ca
     kind: ClusterIssuer
