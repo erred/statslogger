@@ -50,6 +50,7 @@ steps:
       - -c
       - |
         set -ex; \
+        echo $PWD $HOME && echo $$(whoami) && \
         sed -i 's/# newTag: IMAGE_TAG/newTag: "$SHORT_SHA"/' k8s/kustomization.yaml && \
         kubectl apply -k k8s
     volumes:
