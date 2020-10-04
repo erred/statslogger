@@ -8,7 +8,7 @@ tags:
 
 steps:
   - id: login
-    name: gcr.io/google.com/cloudsdktool/cloud-sdk:latest
+    name: gcr.io/cloud-builders/kubectl:latest
     entrypoint: bash
     args:
       - -c
@@ -44,14 +44,14 @@ steps:
         path: /kaniko/.docker
 
   - id: deploy
-    name: gcr.io/google.com/cloudsdktool/cloud-sdk:latest
+    name: gcr.io/cloud-builders/kubectl:latest
     entrypoint: /bin/sh
     args:
       - -c
       - |
         set -ex; \
         sed -i 's/# newTag: IMAGE_TAG/newTag: "$SHORT_SHA"/' k8s/kustomization.yaml && \
-        kubectl apply -k k8s
+        kubectl.1.18 apply -k k8s
     env:
       - KUBECONFIG=/kube/config
     volumes:

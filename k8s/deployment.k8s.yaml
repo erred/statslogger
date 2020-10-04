@@ -27,6 +27,8 @@ spec:
         runAsNonRoot: true
         runAsUser: 65534
       terminationGracePeriodSeconds: 10
+      imagePullSecrets:
+        - name: regcred
       containers:
         - name: statslogger
           image: us.gcr.io/com-seankhliao/statslogger:latest
