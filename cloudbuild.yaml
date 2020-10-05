@@ -13,6 +13,8 @@ steps:
     args:
       - test
       - ./...
+    env:
+      - CGO_ENABLED=0
 
   - id: login
     waitFor:
@@ -32,7 +34,7 @@ steps:
           --secret=cluster-kubectl-creds \
           --format='get(payload.data)' \
           | tr '_-' '/+' \
-          | base64 -d > /kube/config
+          | base64 -d > /kube/config \
         && \
         gcloud secrets versions access latest \
           --secret=github-personal-repo-token \
