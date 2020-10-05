@@ -71,15 +71,16 @@ steps:
       - -c
       - |
         set -ex; \
-        sed -i 's/# newTag: IMAGE_TAG/newTag: "$SHORT_SHA"/' k8s/kustomization.yaml && \
-        kubectl.1.18 kustomize | tee /k8s/$_IMG.yaml | kubectl.1.18 apply -f -
+        cd k8s && \
+        sed -i 's/# newTag: IMAGE_TAG/newTag: "$SHORT_SHA"/' kustomization.yaml && \
+        kubectl.1.18 kustomize | tee /deployed/$_IMG.yaml | kubectl.1.18 apply -f -
     env:
       - KUBECONFIG=/kube/config
     volumes:
       - name: cluster-creds
         path: /kube
       - name: deployed
-        path: /k8s
+        path: /deployed
 
   - id: save-deployment
     name: gcr.io/cloud-builders/gcloud:latest
@@ -92,7 +93,7 @@ steps:
         git config user.email $(gcloud auth list --filter=status:ACTIVE --format='value(account)') && \
         git clone https://x-access-token:$$GITHUB_TOKEN@github.com/seankhliao/kluster && \
         cd kluster/apps && \
-        cp /k8s/$_IMG.yaml . && \
+        cp /deployed/$_IMG.yaml . && \
         git add $_IMG.yaml && \
         git commit -m "update $_IMG deployment to $SHORT_SHA" && \
         git push
@@ -100,4 +101,4 @@ steps:
       - name: github-creds
         path: /github
       - name: deployed
-        path: /k8s
+        path: /deployed
