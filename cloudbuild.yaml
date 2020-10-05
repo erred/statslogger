@@ -60,6 +60,8 @@ steps:
       - -d=$_REG/$_IMG:$SHORT_SHA
       - --reproducible
       - --single-snapshot
+      - --cache=true
+      - --use-new-run
     volumes:
       - name: registry-creds
         path: /kaniko/.docker
